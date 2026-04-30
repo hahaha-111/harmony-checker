@@ -1,0 +1,17 @@
+{
+  "name": "harmony-checker",
+  "version": "1.0.0",
+  "description": "HarmonyOS ArkTS 代码质量检查工具",
+  "type": "module",
+  "bin": {
+    "harmony-checker": "doclib/checker/check.mjs"
+  },
+  "scripts": {
+    "start": "node doclib/checker/check.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hahaha-111/harmony-checker.git"
+  },
+  "license": "MIT"
+}
