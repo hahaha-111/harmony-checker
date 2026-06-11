@@ -11,6 +11,13 @@
  * 6. "Function may throw" 缺失 try-catch 检测
  * 7. catch 类型标注检测（ArkTS 不支持 catch(e: Error)）
  * 8. 未使用 catch 变量
+ * 9. throw 任意类型 (arkts-limited-throw)
+ * 10. await 非 Promise 值
+ * 11. 废弃全局 UI API (UIContext)
+ * 12. List 组件缺少宽高初始化
+ * 13. TextDecoder 废弃 API
+ * 14. 音频 ContentType 废弃
+ * 15. 未类型化对象字面量
  * 
  * 用法：node check.mjs --project=<项目路径>
  */
@@ -103,7 +110,7 @@ function loadResources(projectPath) {
 }
 
 // ============================================================
-// 检查项
+// 检查项 1-5：原有检查
 // ============================================================
 
 /** 1. Resource 类型安全检查 */
@@ -217,18 +224,24 @@ function checkTsImportEts(filePath, content) {
 }
 
 // ============================================================
-// 新增检查项
+// 检查项 6-8：新增原有检查
 // ============================================================
 
-/** 6. 已废弃模块路径检测 (API 20 → @kit.*) */
+/** 6. 已废弃模块路径检测 (API 13+ → @kit.*) */
 const DEPRECATED_IMPORTS = [
-  { old: '@ohos.router',      newer: "'{ router } from '@kit.ArkUI''" },
-  { old: '@ohos.multimedia.media', newer: "'{ media } from '@kit.MediaKit''" },
-  { old: '@ohos.multimedia.audio', newer: "'{ audio } from '@kit.MediaKit''" },
-  { old: '@ohos.promptAction',    newer: "'{ promptAction } from '@kit.ArkUI''" },
-  { old: '@ohos.ability.ability', newer: "'@kit.AbilityKit'" },
-  { old: '@ohos.data.ability',    newer: "'@kit.DataKit'" },
-  { old: '@ohos.net.http',        newer: "'@kit.NetworkKit'" },
+  { old: '@ohos.router',            newer: "'{ router } from '@kit.ArkUI''" },
+  { old: '@ohos.multimedia.media',  newer: "'{ media } from '@kit.MediaKit''" },
+  { old: '@ohos.multimedia.audio',  newer: "'{ audio } from '@kit.MediaKit''" },
+  { old: '@ohos.promptAction',      newer: "'{ promptAction } from '@kit.ArkUI''" },
+  { old: '@ohos.ability.ability',   newer: "'@kit.AbilityKit'" },
+  { old: '@ohos.data.ability',      newer: "'@kit.DataKit'" },
+  { old: '@ohos.net.http',          newer: "'@kit.NetworkKit'" },
+  { old: '@ohos.file.fs',           newer: "'@kit.CoreFileKit'" },
+  { old: '@ohos.file.picker',       newer: "'@kit.CoreFileKit'" },
+  { old: '@ohos.notification',      newer: "'@kit.NotificationKit'" },
+  { old: '@ohos.bluetooth',         newer: "'@kit.ConnectivityKit'" },
+  { old: '@ohos.wifiManager',       newer: "'@kit.ConnectivityKit'" },
+  { old: '@ohos.settings',          newer: "'@kit.SettingsKit'" },
 ];
 
 function checkDeprecatedImports(filePath, content, lines) {
@@ -253,7 +266,7 @@ function checkDeprecatedAPIs(filePath, content, lines) {
     { pattern: /DatePickerDialog\.(show|open)\s*\(/, name: 'DatePickerDialog.show/open', fix: '改用 promptAction.showDialog' },
     { pattern: /fileIo\.show\s*\(/, name: 'fileIo.show', fix: '改用 promptAction.showDialog 或 console.warn' },
     { pattern: /fs\.show\s*\(/, name: 'fs.show', fix: '改用 promptAction.showDialog 或 console.warn' },
-    { pattern: /decodeWithStream\s*\(/, name: 'decodeWithStream', fix: '改用 decode' },
+    { pattern: /decodeWithStream\s*\(/, name: 'decodeWithStream', fix: '改用 decodeToString' },
   ];
 
   lines.forEach((line, idx) => {
@@ -279,7 +292,7 @@ function checkCatchTypeAnnotation(filePath, content, lines) {
       if (p.test(line)) {
         addWarning('ARKTS', path.relative(projectPath, filePath), idx + 1,
           `catch 带有类型标注：${line.trim().substring(0, 60)}`,
-          'ArkTS (API 20) 不支持 catch 类型标注，改为 catch (e) 或 catch {}'
+          'ArkTS (API 13+) 不支持 catch 类型标注，改为 catch (e) 或 catch {}'
         );
       }
     }
@@ -288,18 +301,16 @@ function checkCatchTypeAnnotation(filePath, content, lines) {
 
 /** 9. 未使用 catch 变量：catch (err) {} */
 function checkUnusedCatchVariable(filePath, content, lines) {
-  // Matches: catch (ident) {} or catch (ident)  {  next line: }
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     // catch (xxx) {} on same line
     const sameLine = line.match(/catch\s*\(\s*(\w+)\s*\)\s*\{\s*\}\s*$/);
     if (sameLine) {
-      // Only flag if the variable is used nowhere else in the file
       const varName = sameLine[1];
       const varRegex = new RegExp('\\b' + varName + '\\b', 'g');
       let count = 0, m;
       while ((m = varRegex.exec(content)) !== null) count++;
-      if (count <= 1) {  // only appears in the catch clause itself
+      if (count <= 1) {
         addWarning('STYLE', path.relative(projectPath, filePath), i + 1,
           `未使用的 catch 变量：${varName}`,
           '改为 catch {}'
@@ -312,7 +323,6 @@ function checkUnusedCatchVariable(filePath, content, lines) {
     const multiLine = line.match(/catch\s*\(\s*(\w+)\s*\)\s*\{\s*$/);
     if (multiLine) {
       const varName = multiLine[1];
-      // Check if next line is just '}'
       if (i + 1 < lines.length && lines[i + 1].trim() === '}') {
         const varRegex = new RegExp('\\b' + varName + '\\b', 'g');
         let count = 0, m;
@@ -334,10 +344,12 @@ const THROWING_CALLS = [
   'fs.unlink(', 'fs.rename(', 'fs.copyFile(', 'fs.access(', 'fs.listFile(',
   'fs.append(', 'fs.truncate(', 'fs.fstat(', 'fs.ftruncate(',
   'fileIo.open(', 'fileIo.read(', 'fileIo.write(', 'fileIo.stat(', 'fileIo.close(',
+  'JSON.parse(', 'router.pushUrl(', 'router.replaceUrl(', 'router.back(',
+  'promptAction.showToast(', 'promptAction.showDialog(',
+  'Preferences.get(', 'Preferences.put(', 'Preferences.delete(',
 ];
 
 function checkMissingTryCatch(filePath, content, lines) {
-  // Find async functions/methods that have throwing calls but no try-catch
   let inAsyncFn = false;
   let braceDepth = 0;
   let hasTry = false;
@@ -349,7 +361,6 @@ function checkMissingTryCatch(filePath, content, lines) {
   
   lines.forEach((line, idx) => {
     if (!inAsyncFn) {
-      // Check if this line starts an async function
       if (isAsyncLine(line) || (line.includes('async ') && line.includes('('))) {
         inAsyncFn = true;
         asyncFnStartLine = idx + 1;
@@ -360,7 +371,6 @@ function checkMissingTryCatch(filePath, content, lines) {
     }
     
     if (inAsyncFn) {
-      // Count braces
       for (const ch of line) {
         if (ch === '{') braceDepth++;
         if (ch === '}') braceDepth--;
@@ -368,17 +378,14 @@ function checkMissingTryCatch(filePath, content, lines) {
       
       if (hasTryCatch(line)) hasTry = true;
       
-      // Check for throwing calls
       for (const tc of THROWING_CALLS) {
         if (line.includes(tc)) {
           throwingCallsFound.push({ call: tc, line: idx + 1 });
         }
       }
       
-      // End of function
       if (braceDepth <= 0 && idx >= asyncFnStartLine) {
         if (throwingCallsFound.length > 0 && !hasTry) {
-          // Report only first throwing call per function
           const first = throwingCallsFound[0];
           addWarning('SAFETY', path.relative(projectPath, filePath), first.line,
             `"Function may throw exceptions" — ${first.call} 未包裹 try-catch`,
@@ -389,6 +396,259 @@ function checkMissingTryCatch(filePath, content, lines) {
       }
     }
   });
+}
+
+// ============================================================
+// 检查项 11-18：API 13 严格模式新增检查
+// ============================================================
+
+/** 11. throw 任意类型 (arkts-limited-throw)
+ *  检测 catch 块内 throw e; 的写法 */
+function checkThrowArbitraryType(filePath, content, lines) {
+  let inCatch = false;
+  let catchVariable = null;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    // Detect start of catch block: catch (e) {
+    const catchMatch = line.match(/catch\s*\(\s*(\w+)\s*\)/);
+    if (catchMatch) {
+      inCatch = true;
+      catchVariable = catchMatch[1];
+      continue;
+    }
+    
+    if (inCatch) {
+      // Verify we're still inside the catch block by brace balance
+      // Simple heuristic: check if line starts with '}'
+      if (line.trim() === '}') {
+        inCatch = false;
+        catchVariable = null;
+        continue;
+      }
+      
+      // Detect: throw e; where e is the catch variable
+      if (catchVariable && line.includes('throw ' + catchVariable + ';')) {
+        addWarning('ARKTS', path.relative(projectPath, filePath), i + 1,
+          `throw 任意类型：throw ${catchVariable}; — ArkTS 禁止抛出 unknown 类型`,
+          `改为 throw new Error(String(${catchVariable}));`
+        );
+      }
+    }
+  }
+}
+
+/** 12. await 非 Promise 值检测
+ *  检测已知同步 API 前错误使用 await */
+function checkAwaitNonPromise(filePath, content, lines) {
+  const syncApiPatterns = [
+    'fs.mkdirSync(', 'fs.readSync(', 'fs.writeSync(', 'fs.statSync(',
+    'fs.closeSync(', 'fs.unlinkSync(', 'fs.renameSync(', 'fs.copyFileSync(',
+    'fs.accessSync(', 'fs.listFileSync(', 'fs.appendSync(', 'fs.truncateSync(',
+  ];
+  
+  lines.forEach((line, idx) => {
+    // Detect: await something that is a known sync method
+    for (const syncApi of syncApiPatterns) {
+      if (line.includes('await ') && line.includes(syncApi)) {
+        addWarning('SAFETY', path.relative(projectPath, filePath), idx + 1,
+          `await 非 Promise：${line.trim().substring(0, 60)}`,
+          `移除 await，${syncApi} 为同步方法`
+        );
+      }
+    }
+    
+    // Detect: await 后跟方法名但方法不是 async（启发式：声明处无 async）
+    // 匹配 pattern: await someVar.someMethod() 但难以静态判断返回值类型
+    // 这里仅检测常见明确的同步 API
+  });
+}
+
+/** 13. 废弃全局 UI API (UIContext)
+ *  检测 router.pushUrl/replaceUrl/back/getParams、getContext 等 */
+function checkDeprecatedUIApis(filePath, content, lines) {
+  lines.forEach((line, idx) => {
+    const trimmed = line.trim();
+    
+    // 全局 router 调用（非通过 UIContext）
+    if (!line.includes('getUIContext') && !line.includes('getRouter')) {
+      // router.pushUrl, router.replaceUrl, router.back, router.getParams
+      const routerMatches = trimmed.match(/(?<!this\.getUIContext\(\)\.getRouter\(\)\.)(router\.(pushUrl|replaceUrl|back|getParams))\s*\(/);
+      if (routerMatches) {
+        addWarning('DEPRECATED', path.relative(projectPath, filePath), idx + 1,
+          `废弃全局 API：${routerMatches[1]}()`,
+          '改用 this.getUIContext().getRouter().xxx()'
+        );
+      }
+    }
+    
+    // getContext() 顶级调用（非 this 上下文）
+    // 检测：const ctx = getContext(...) 但不是 getHostContext
+    if (trimmed.startsWith('getContext(') && !trimmed.includes('getHostContext')) {
+      // Only flag standalone getContext() calls used for things other than resourceManager
+      if (!trimmed.includes('resourceManager')) {
+        addWarning('DEPRECATED', path.relative(projectPath, filePath), idx + 1,
+          `废弃 API：getContext() 在 API 13 中已废弃`,
+          '改用 getHostContext() 或 this.getUIContext().getHostContext()'
+        );
+      }
+    }
+  });
+}
+
+/** 14. List 组件缺少宽高初始化 */
+function checkListNoDimension(filePath, content, lines) {
+  // Look for pattern: List() { ... } without .width('100%') / .height('100%')
+  // or just List() on its own line with chained methods
+  let inListBlock = false;
+  let listStartLine = 0;
+  let hasWidth = false;
+  let hasHeight = false;
+  let listOpenedBrace = false;
+  let braceCount = 0;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    // Detect List() with possible chaining, but not as part of navigation
+    if (!inListBlock && /^\s*List\s*\(\s*\)/.test(line) && !line.includes('LazyForEach') && !line.includes('@Builder')) {
+      // Check if List() has chained .width or .height on the same line
+      if (line.includes('.width(') && line.includes('.height(')) {
+        continue; // Has both dimensions
+      }
+      
+      inListBlock = true;
+      listStartLine = i + 1;
+      hasWidth = line.includes('.width(');
+      hasHeight = line.includes('.height(');
+      listOpenedBrace = false;
+      braceCount = 0;
+    }
+    
+    if (inListBlock) {
+      // Track braces
+      for (const ch of line) {
+        if (ch === '{') { braceCount++; listOpenedBrace = true; }
+        if (ch === '}') braceCount--;
+      }
+      
+      // Check for .width() and .height() in chained calls
+      if (line.includes('.width(')) hasWidth = true;
+      if (line.includes('.height(')) hasHeight = true;
+      
+      // End of List block (braces balanced)
+      if (listOpenedBrace && braceCount <= 0) {
+        if (!hasWidth || !hasHeight) {
+          const missing = [];
+          if (!hasWidth) missing.push('.width(\'100%\')');
+          if (!hasHeight) missing.push('.height(\'100%\')');
+          addWarning('STYLE', path.relative(projectPath, filePath), listStartLine,
+            `List 组件缺少宽高初始化，建议添加：${missing.join('、')}`,
+            'ArkUI 要求长列表必须具有明确的边界尺寸，否则重绘性能差'
+          );
+        }
+        inListBlock = false;
+      }
+    }
+  }
+}
+
+/** 15. TextDecoder 废弃 API */
+function checkTextDecoderDeprecated(filePath, content, lines) {
+  lines.forEach((line, idx) => {
+    if (line.includes('new util.TextDecoder(') || line.includes('new util.TextEncoder(')) {
+      const apiName = line.includes('TextDecoder') ? 'TextDecoder' : 'TextEncoder';
+      addWarning('DEPRECATED', path.relative(projectPath, filePath), idx + 1,
+        `废弃 API：new util.${apiName}() 构造函数已废弃`,
+        `改用 util.${apiName}.create() 工厂方法`
+      );
+    }
+    if (line.includes('decodeWithStream(')) {
+      addWarning('DEPRECATED', path.relative(projectPath, filePath), idx + 1,
+        '废弃 API：decodeWithStream() 已废弃',
+        '改用 decodeToString()'
+      );
+    }
+  });
+}
+
+/** 16. 音频 ContentType 废弃 */
+function checkAudioContentType(filePath, content, lines) {
+  const deprecatedTypes = [
+    'CONTENT_TYPE_UNKNOWN', 'CONTENT_TYPE_MUSIC', 'CONTENT_TYPE_SPEECH',
+    'CONTENT_TYPE_RINGTONE', 'CONTENT_TYPE_MOVIE',
+  ];
+  
+  lines.forEach((line, idx) => {
+    for (const ct of deprecatedTypes) {
+      if (line.includes('audio.ContentType.' + ct) || line.includes('ContentType.' + ct)) {
+        addWarning('DEPRECATED', path.relative(projectPath, filePath), idx + 1,
+          `废弃 API：${ct} 已废弃`,
+          'API 10+ 只需指定 usage（如 audio.StreamUsage.STREAM_USAGE_ALARM），无需 contentType'
+        );
+      }
+    }
+  });
+}
+
+/** 17. 未类型化对象字面量 (arkts-no-untyped-obj-literals) */
+function checkUntypedObjectLiterals(filePath, content, lines) {
+  // 检测泛型字典拼装参数后传给要求特定 Interface 的系统 API
+  // 典型模式：Record<string, ...> 拼装后传给 system API
+  lines.forEach((line, idx) => {
+    // 检测赋值给 Record<string, ...> 类型的变量但字面量未显式声明类型
+    const recordAssign = line.match(/:\s*Record\s*<\s*string\s*,\s*[^>]+>\s*=\s*\{/);
+    if (recordAssign) {
+      addWarning('ARKTS', path.relative(projectPath, filePath), idx + 1,
+        `未类型化对象字面量：${line.trim().substring(0, 60)}`,
+        'ArkTS 禁止用 Record<string, ...> 拼装参数后传给特定 Interface 的 API，应直接使用符合 API 要求的对象字面量'
+      );
+    }
+    
+    // 检测 { [key: string]: ... } 索引签名对象字面量
+    const indexSig = line.match(/\[\s*key\s*:\s*string\s*\].*=\s*\{/);
+    if (indexSig) {
+      addWarning('ARKTS', path.relative(projectPath, filePath), idx + 1,
+        `索引签名对象字面量：${line.trim().substring(0, 60)}`,
+        'ArkTS 禁止未类型化索引签名对象字面量动态传参'
+      );
+    }
+  });
+}
+
+/** 18. 未使用的变量/导入检测（简化启发式） */
+function checkUnusedDeclarations(filePath, content, lines) {
+  // 查找 import 语句中未使用的命名导入
+  const importDecls = [];
+  const importRegex = /import\s*\{([^}]+)\}\s*from\s*['"]/g;
+  let match;
+  while ((match = importRegex.exec(content)) !== null) {
+    const names = match[1].split(',').map(n => n.trim()).filter(n => n.length > 0);
+    for (const name of names) {
+      const cleanName = name.replace(/\s+as\s+\w+/, '').trim(); // handle "as" aliases
+      if (cleanName !== '_') {
+        importDecls.push(cleanName);
+      }
+    }
+  }
+  
+  if (importDecls.length === 0) return;
+  
+  for (const decl of importDecls) {
+    // Check if the import is used elsewhere in the file (not in the import statement itself)
+    const regex = new RegExp('\\b' + decl + '\\b', 'g');
+    let count = 0;
+    let m;
+    while ((m = regex.exec(content)) !== null) count++;
+    // count includes the import declaration itself; if only 1 hit, it's unused
+    if (count <= 1) {
+      addWarning('STYLE', path.relative(projectPath, filePath), 0,
+        `未使用的导入：${decl}`,
+        '删除该导入声明'
+      );
+    }
+  }
 }
 
 // ============================================================
@@ -424,12 +684,22 @@ for (const filePath of sourceFiles) {
   checkAnyType(filePath, content, lines);
   checkTsImportEts(filePath, content);
   
-  // 新增检查
+  // 1.0 版本新增检查
   checkDeprecatedImports(filePath, content, lines);
   checkDeprecatedAPIs(filePath, content, lines);
   checkCatchTypeAnnotation(filePath, content, lines);
   checkUnusedCatchVariable(filePath, content, lines);
   checkMissingTryCatch(filePath, content, lines);
+  
+  // API 13 严格模式新增检查
+  checkThrowArbitraryType(filePath, content, lines);
+  checkAwaitNonPromise(filePath, content, lines);
+  checkDeprecatedUIApis(filePath, content, lines);
+  checkListNoDimension(filePath, content, lines);
+  checkTextDecoderDeprecated(filePath, content, lines);
+  checkAudioContentType(filePath, content, lines);
+  checkUntypedObjectLiterals(filePath, content, lines);
+  checkUnusedDeclarations(filePath, content, lines);
 }
 
 // ============================================================

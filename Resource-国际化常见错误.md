@@ -2,6 +2,8 @@
 
 > 2026-04-30 记录自 wuwei 项目编译错误修复经验
 
+> ⚠️ 如需查看完整的 **HarmonyOS NEXT (API 13) 严格模式踩坑总结**（包含 throw 限制、UIContext 适配、废弃 API 等），请查阅 [doclib/HarmonyOS-NEXT-API13-踩坑总结.md](./doclib/HarmonyOS-NEXT-API13-踩坑总结.md)
+
 ## 错误类型 & 修复方案
 
 ### 错误 1：Resource 赋值给 string 类型变量
